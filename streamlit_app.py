@@ -6,57 +6,62 @@ import joblib
 from statsmodels.tsa.arima.model import ARIMAResults
 
 
-@st.cache_resource  # loads once, stays in memory
+@st.cache_resource
 def load_model():
     model = ARIMAResults.load('model/arima_model.pkl')
     params = joblib.load('model/arima_params.joblib')
     return model, params
 
-model, params = load_model()
+@st.cache_data
+def load_data():
+    df = pd.read_csv('dataset/energy_dataset.csv', index_col='time')
+    df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
+    df = df.asfreq('D')
+    df['price actual'] = df['price actual'].interpolate(method='linear')
+    return df
 
+
+model, params = load_model()
+df = load_data()
 
 st.title("Energy Price Forecasting")
 st.write(f"Model: ARIMA({params['optimal_p']}, {params['optimal_d']}, {params['optimal_q']})")
 
+forecast_pct = st.slider(
+    "Forecast portion of data (%)",
+    min_value=5,
+    max_value=40,
+    value=20,
+    step=5,
+    help="Controls how much of the data is used for forecasting"
+)
 
-uploaded_file = st.file_uploader("Upload CSV with 'time' and 'price actual' columns", type='csv')
+split_idx = int(len(df) * (1 - forecast_pct / 100))
+train_display = df.iloc[:split_idx]
+steps = len(df) - split_idx
 
-if uploaded_file:
-    df = pd.read_csv(uploaded_file, parse_dates=['time'], index_col='time')
-    st.subheader("Uploaded Data")
-    st.line_chart(df['price actual'])
+if st.button("Generate Forecast"):
+    with st.spinner("Forecasting..."):
 
+        actual_pct = df.iloc[split_idx:]
 
-    steps = st.slider("Forecast how many days ahead?", min_value=1, max_value=60, value=30)
+        updated_model = model.apply(actual_pct['price actual'])
+        pred_obj = updated_model.get_prediction(
+            start=actual_pct.index[0],
+            end=actual_pct.index[-1],
+            dynamic=False
+        )
+        forecast = pred_obj.predicted_mean
+        forecast.index = actual_pct.index
 
-    if st.button("Generate Forecast"):
-        with st.spinner("Forecasting..."):
+        forecast_df = pd.DataFrame({
+            'Forecast': forecast.values
+        }, index=actual_pct.index)
 
-            updated_model = model.apply(df['price actual'])
-            forecast = updated_model.forecast(steps=steps)
-
-
-            forecast_index = pd.date_range(
-                start=df.index[-1] + pd.Timedelta(days=1),
-                periods=steps
-            )
-            forecast_df = pd.DataFrame({
-                'Forecast': forecast.values
-            }, index=forecast_index)
-
-
-        st.subheader("Forecast Results")
-        fig, ax = plt.subplots(figsize=(12, 4))
-        df['price actual'].iloc[-60:].plot(ax=ax, label='Historical', color='steelblue')
-        forecast_df['Forecast'].plot(ax=ax, label='Forecast', color='tomato', linestyle='--')
-        ax.legend()
-        ax.set_title("Energy Price Forecast")
-        st.pyplot(fig)
-
-
-        st.subheader("Forecast Values")
-        st.dataframe(forecast_df)
-
-
-        csv = forecast_df.to_csv().encode('utf-8')
-        st.download_button("Download Forecast CSV", csv, "forecast.csv", "text/csv")
+    st.subheader("Forecast Results")
+    fig, ax = plt.subplots(figsize=(12, 4))
+    train_display['price actual'].plot(ax=ax, label='Historical', color='steelblue')
+    forecast_df['Forecast'].plot(ax=ax, label='Forecast', color='tomato')
+    ax.legend()
+    ax.set_title(f"Energy Price Forecast")
+    st.pyplot(fig)
