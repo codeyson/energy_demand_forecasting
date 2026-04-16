@@ -4,8 +4,12 @@ import pandas as pd
 import joblib
 import matplotlib.pyplot as plt
 
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dropout, Dense
+import tensorflow as tf
+
+Sequential = tf.keras.models.Sequential
+LSTM = tf.keras.layers.LSTM
+Dropout = tf.keras.layers.Dropout
+Dense = tf.keras.layers.Dense
 
 # -----------------------------
 # LOAD MODELS
