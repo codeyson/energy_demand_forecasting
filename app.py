@@ -41,29 +41,34 @@ def load_resources():
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv("dataset/energy-dataset.csv", index_col='time')
-    df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
-    df = df.asfreq('D')
-    df['price actual'] = df['price actual'].interpolate(method='linear')
+    df = pd.read_csv("dataset/energy_dataset.csv")
+
+    # Keep preprocessing closer to notebook
+    df["time"] = pd.to_datetime(df["time"], utc=True).dt.tz_localize(None)
+    df = df.sort_values("time").reset_index(drop=True)
+
+    # Removed df.asfreq('D') because it can break alignment with training data
+    df["price actual"] = df["price actual"].interpolate(method="linear")
+    df["price actual"] = df["price actual"].ffill().bfill()
+
     return df
 
 # =============================
 # FORECAST FUNCTION
+# Notebook-style prediction:
+# uses actual previous values for each test step
 # =============================
-def forecast_lstm(model, scaler, series, steps=30, window_size=30):
-    scaled_series = scaler.transform(series.reshape(-1, 1))
-    input_seq = scaled_series[-window_size:].reshape(1, window_size, 1)
+def forecast_lstm(model, scaler, train_series, test_series, window_size=30):
+    full_series = np.concatenate([train_series, test_series])
+    scaled_full = scaler.transform(full_series.reshape(-1, 1)).flatten()
 
-    preds_scaled = []
-    for _ in range(steps):
-        pred = model.predict(input_seq, verbose=0)
-        preds_scaled.append(pred[0, 0])
-        input_seq = np.concatenate(
-            [input_seq[:, 1:, :], pred.reshape(1, 1, 1)],
-            axis=1
-        )
+    X_test = []
+    for i in range(len(train_series), len(full_series)):
+        X_test.append(scaled_full[i - window_size:i])
 
-    preds_scaled = np.array(preds_scaled).reshape(-1, 1)
+    X_test = np.array(X_test).reshape(-1, window_size, 1)
+
+    preds_scaled = model.predict(X_test, verbose=0)
     preds = scaler.inverse_transform(preds_scaled).flatten()
     return preds
 
@@ -106,22 +111,25 @@ st.info(f"Historical: {split_idx} days ({100 - forecast_pct}%) → Forecast: {st
 if st.button("Generate Forecast"):
     with st.spinner("Forecasting..."):
 
-        # Use training portion as input window
-        series = train_display['price actual'].values
-        preds = forecast_lstm(model, scaler, series, steps=steps, window_size=30)
+        # Use notebook-style prediction instead of recursive forecasting
+        train_series = train_display["price actual"].values
+        test_series = actual_pct["price actual"].values
+        preds = forecast_lstm(model, scaler, train_series, test_series, window_size=30)
 
         forecast_df = pd.DataFrame({
             'Forecast': preds
-        }, index=actual_pct.index)
+        }, index=actual_pct["time"])
 
     st.subheader("Forecast Results")
     fig, ax = plt.subplots(figsize=(12, 4))
-    train_display['price actual'].plot(ax=ax, label=f'Historical ({100 - forecast_pct}%)', color='steelblue')
-    actual_pct['price actual'].plot(ax=ax, label=f'Actual ({forecast_pct}%)', color='gray', linestyle=':')
-    forecast_df['Forecast'].plot(ax=ax, label='Forecast', color='tomato')
-    ax.axvline(x=train_display.index[-1], color='black', linestyle='--', alpha=0.4, label='Split point')
+    ax.plot(train_display["time"], train_display["price actual"], label=f'Historical ({100 - forecast_pct}%)', color='steelblue')
+    ax.plot(actual_pct["time"], actual_pct["price actual"], label=f'Actual ({forecast_pct}%)', color='gray', linestyle=':')
+    ax.plot(forecast_df.index, forecast_df['Forecast'], label='Forecast', color='tomato')
+    ax.axvline(x=train_display["time"].iloc[-1], color='black', linestyle='--', alpha=0.4, label='Split point')
     ax.legend()
     ax.set_title(f"LSTM Energy Price Forecast — {100 - forecast_pct}/{forecast_pct} Split")
+    ax.set_xlabel("time")
+    ax.set_ylabel("Energy Price")
     st.pyplot(fig)
 
     st.subheader("Forecast Values")
