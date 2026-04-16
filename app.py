@@ -3,73 +3,51 @@ import numpy as np
 import pandas as pd
 import joblib
 import matplotlib.pyplot as plt
-
 import tensorflow as tf
 
-Sequential = tf.keras.models.Sequential
-LSTM = tf.keras.layers.LSTM
-Dropout = tf.keras.layers.Dropout
-Dense = tf.keras.layers.Dense
+# =============================
+# PAGE CONFIG
+# =============================
+st.set_page_config(page_title="LSTM Energy Demand Forecast", layout="wide")
 
-# -----------------------------
-# LOAD MODELS
-# -----------------------------
+# =============================
+# MODEL DEFINITION
+# Must match the training architecture exactly
+# =============================
+def build_lstm_model():
+    model = tf.keras.Sequential([
+        tf.keras.layers.LSTM(128, return_sequences=True, input_shape=(30, 1)),
+        tf.keras.layers.Dropout(0.0),
+        tf.keras.layers.LSTM(16, return_sequences=False),
+        tf.keras.layers.Dropout(0.0),
+        tf.keras.layers.Dense(16, activation="relu"),
+        tf.keras.layers.Dense(1, activation="linear")
+    ])
+    return model
+
+# =============================
+# LOAD RESOURCES
+# =============================
 @st.cache_resource
-def load_models():
+def load_resources():
     try:
-        # Rebuild LSTM architecture
-        lstm_model = Sequential([
-            LSTM(128, return_sequences=True, input_shape=(30, 1)),
-            Dropout(0.0),
-            LSTM(16, return_sequences=False),
-            Dropout(0.0),
-            Dense(16, activation="relu"),
-            Dense(1, activation="linear")
-        ])
+        model = build_lstm_model()
 
-        # Initialize model
-        lstm_model(np.zeros((1, 30, 1), dtype=np.float32))
+        # Build model first before loading weights
+        dummy_input = np.zeros((1, 30, 1), dtype=np.float32)
+        model(dummy_input)
 
-        # Load weights (IMPORTANT: must be weights file)
-        lstm_model.load_weights("model/lstm_model.h5")
-
-        arima_model = joblib.load("model/arima_model.pkl")
+        model.load_weights("model/lstm_model.h5")
         scaler = joblib.load("model/scaler.pkl")
-
-        return lstm_model, arima_model, scaler
-
+        return model, scaler, None
     except Exception as e:
-        st.error(f"❌ Error loading models: {e}")
-        return None, None, None
+        return None, None, str(e)
 
-
-lstm_model, arima_model, scaler = load_models()
-
-# Stop app if models failed
-if lstm_model is None:
-    st.stop()
-
-# -----------------------------
-# LOAD DATA
-# -----------------------------
 @st.cache_data
 def load_data():
-    try:
-        df = pd.read_csv("dataset/energy_dataset.csv")
-        return df
-    except Exception as e:
-        st.error(f"❌ Error loading dataset: {e}")
-        return None
+    df = pd.read_csv("dataset/energy_dataset.csv")
+    return df
 
-
-df = load_data()
-
-if df is None:
-    st.stop()
-
-# -----------------------------
-# TARGET COLUMN
-# -----------------------------
 def get_target_column(df):
     possible_cols = [
         "energy",
@@ -83,88 +61,79 @@ def get_target_column(df):
             return col
     return df.columns[-1]
 
+def forecast_lstm(model, scaler, series, steps=24, window_size=30):
+    scaled_series = scaler.transform(series.reshape(-1, 1))
+    input_seq = scaled_series[-window_size:].reshape(1, window_size, 1)
+
+    preds_scaled = []
+    for _ in range(steps):
+        pred = model.predict(input_seq, verbose=0)
+        preds_scaled.append(pred[0, 0])
+
+        input_seq = np.concatenate(
+            [input_seq[:, 1:, :], pred.reshape(1, 1, 1)],
+            axis=1
+        )
+
+    preds_scaled = np.array(preds_scaled).reshape(-1, 1)
+    preds = scaler.inverse_transform(preds_scaled).flatten()
+    return preds
+
+# =============================
+# APP
+# =============================
+st.title("⚡ LSTM Energy Demand Forecasting")
+st.write("Forecast future energy demand using the saved LSTM model.")
+
+model, scaler, load_error = load_resources()
+
+if load_error:
+    st.error(f"Model/scaler loading failed: {load_error}")
+    st.stop()
+
+try:
+    df = load_data()
+except Exception as e:
+    st.error(f"Dataset loading failed: {e}")
+    st.stop()
 
 target_col = get_target_column(df)
 
-# -----------------------------
-# UI
-# -----------------------------
-st.title("⚡ Energy Demand Forecasting")
-st.write("Compare ARIMA and LSTM predictions")
+if target_col not in df.columns:
+    st.error("Target column not found in dataset.")
+    st.stop()
 
-model_choice = st.selectbox("Choose Model", ["ARIMA", "LSTM"])
-steps = st.slider("Forecast Steps (hours)", 1, 48, 24)
+series = df[target_col].dropna().values
 
-# -----------------------------
-# ARIMA
-# -----------------------------
-if model_choice == "ARIMA":
-    st.subheader("ARIMA Forecast")
+if len(series) < 30:
+    st.error("Dataset must contain at least 30 rows for forecasting.")
+    st.stop()
 
+st.subheader("Forecast Settings")
+steps = st.slider("Forecast horizon (hours)", min_value=1, max_value=48, value=24)
+
+if st.button("Run Forecast"):
     try:
-        forecast = arima_model.forecast(steps=steps)
+        preds = forecast_lstm(model, scaler, series, steps=steps, window_size=30)
 
-        fig, ax = plt.subplots()
-        ax.plot(range(1, steps + 1), forecast, marker="o")
-        ax.set_title("ARIMA Forecast")
-        ax.set_xlabel("Step")
-        ax.set_ylabel("Energy Demand")
+        result_df = pd.DataFrame({
+            "Hour": np.arange(1, steps + 1),
+            "Predicted Energy Demand": preds
+        })
 
+        st.subheader("Forecast Results")
+        st.dataframe(result_df, use_container_width=True)
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(result_df["Hour"], result_df["Predicted Energy Demand"], marker="o")
+        ax.set_title("LSTM Forecast")
+        ax.set_xlabel("Forecast Hour")
+        ax.set_ylabel("Predicted Energy Demand")
+        ax.grid(True, alpha=0.3)
         st.pyplot(fig)
 
-        st.dataframe(pd.DataFrame({
-            "Step": range(1, steps + 1),
-            "Forecast": forecast
-        }))
+        st.subheader("Latest Input Window")
+        st.line_chart(pd.DataFrame({"Recent Actual Values": series[-30:]}))
 
     except Exception as e:
-        st.error(f"❌ ARIMA error: {e}")
-
-# -----------------------------
-# LSTM
-# -----------------------------
-if model_choice == "LSTM":
-    st.subheader("LSTM Forecast")
-
-    try:
-        series = df[target_col].dropna().values.reshape(-1, 1)
-
-        if len(series) < 30:
-            st.error("Dataset must have at least 30 rows")
-        else:
-            # Scale input
-            scaled_series = scaler.transform(series)
-
-            # Get last 30 values
-            input_seq = scaled_series[-30:].reshape(1, 30, 1)
-
-            preds_scaled = []
-
-            for _ in range(steps):
-                pred = lstm_model.predict(input_seq, verbose=0)
-                preds_scaled.append(pred[0, 0])
-
-                # Slide window
-                input_seq = np.concatenate(
-                    [input_seq[:, 1:, :], pred.reshape(1, 1, 1)],
-                    axis=1
-                )
-
-            preds_scaled = np.array(preds_scaled).reshape(-1, 1)
-            preds = scaler.inverse_transform(preds_scaled).flatten()
-
-            fig, ax = plt.subplots()
-            ax.plot(range(1, steps + 1), preds, marker="o")
-            ax.set_title("LSTM Forecast")
-            ax.set_xlabel("Step")
-            ax.set_ylabel("Energy Demand")
-
-            st.pyplot(fig)
-
-            st.dataframe(pd.DataFrame({
-                "Step": range(1, steps + 1),
-                "Forecast": preds
-            }))
-
-    except Exception as e:
-        st.error(f"❌ LSTM error: {e}")
+        st.error(f"Forecast failed: {e}")
