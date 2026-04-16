@@ -5,15 +5,9 @@ import joblib
 import matplotlib.pyplot as plt
 import tensorflow as tf
 
-# =============================
-# PAGE CONFIG
-# =============================
-st.set_page_config(page_title="LSTM Energy Demand Forecast", layout="wide")
+st.set_page_config(page_title="Energy Demand Forecasting", layout="wide")
 
-# =============================
-# MODEL DEFINITION
-# Must match the training architecture exactly
-# =============================
+
 def build_lstm_model():
     model = tf.keras.Sequential([
         tf.keras.layers.LSTM(128, return_sequences=True, input_shape=(30, 1)),
@@ -25,15 +19,12 @@ def build_lstm_model():
     ])
     return model
 
-# =============================
-# LOAD RESOURCES
-# =============================
 @st.cache_resource
 def load_resources():
     try:
         model = build_lstm_model()
 
-        # Build model first before loading weights
+        # Build model before loading weights
         dummy_input = np.zeros((1, 30, 1), dtype=np.float32)
         model(dummy_input)
 
@@ -45,11 +36,15 @@ def load_resources():
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv("dataset/energy_dataset.csv")
+    df = pd.read_csv("dataset/energy_dataset.csv", index_col="time")
+    df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
+    df = df.sort_index()
+    df = df.asfreq("D")
     return df
 
 def get_target_column(df):
     possible_cols = [
+        "price actual",
         "energy",
         "demand",
         "energy_demand",
@@ -61,12 +56,13 @@ def get_target_column(df):
             return col
     return df.columns[-1]
 
-def forecast_lstm(model, scaler, series, steps=24, window_size=30):
-    scaled_series = scaler.transform(series.reshape(-1, 1))
-    input_seq = scaled_series[-window_size:].reshape(1, window_size, 1)
+def forecast_lstm_over_test(model, scaler, train_series, test_len, window_size=30):
+    scaled_train = scaler.transform(train_series.reshape(-1, 1))
+    input_seq = scaled_train[-window_size:].reshape(1, window_size, 1)
 
     preds_scaled = []
-    for _ in range(steps):
+
+    for _ in range(test_len):
         pred = model.predict(input_seq, verbose=0)
         preds_scaled.append(pred[0, 0])
 
@@ -79,11 +75,8 @@ def forecast_lstm(model, scaler, series, steps=24, window_size=30):
     preds = scaler.inverse_transform(preds_scaled).flatten()
     return preds
 
-# =============================
 # APP
-# =============================
-st.title("⚡ LSTM Energy Demand Forecasting")
-st.write("Forecast future energy demand using the saved LSTM model.")
+st.title("Energy Demand Forecasting")
 
 model, scaler, load_error = load_resources()
 
@@ -103,37 +96,53 @@ if target_col not in df.columns:
     st.error("Target column not found in dataset.")
     st.stop()
 
-series = df[target_col].dropna().values
+df[target_col] = pd.to_numeric(df[target_col], errors="coerce")
+df[target_col] = df[target_col].interpolate(method="linear")
+df = df.dropna(subset=[target_col])
 
-if len(series) < 30:
-    st.error("Dataset must contain at least 30 rows for forecasting.")
+if len(df) < 60:
+    st.error("Dataset must contain at least 60 valid rows for forecasting.")
     st.stop()
 
-st.subheader("Forecast Settings")
-steps = st.slider("Forecast horizon (hours)", min_value=1, max_value=48, value=24)
+st.write("Model: LSTM")
 
-if st.button("Run Forecast"):
-    try:
-        preds = forecast_lstm(model, scaler, series, steps=steps, window_size=30)
+forecast_pct = st.slider(
+    "Forecast portion of data (%)",
+    min_value=5,
+    max_value=40,
+    value=20,
+    step=5,
+    help="Controls how much of the data is used for forecasting"
+)
 
-        result_df = pd.DataFrame({
-            "Hour": np.arange(1, steps + 1),
-            "Predicted Energy Demand": preds
-        })
+split_idx = int(len(df) * (1 - forecast_pct / 100))
+train_display = df.iloc[:split_idx]
+test_actual = df.iloc[split_idx:]
+steps = len(test_actual)
 
-        st.subheader("Forecast Results")
-        st.dataframe(result_df, use_container_width=True)
+if len(train_display) < 30:
+    st.error("Training portion is too small. Increase the dataset size or reduce forecast percentage.")
+    st.stop()
 
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(result_df["Hour"], result_df["Predicted Energy Demand"], marker="o")
-        ax.set_title("LSTM Forecast")
-        ax.set_xlabel("Forecast Hour")
-        ax.set_ylabel("Predicted Energy Demand")
-        ax.grid(True, alpha=0.3)
-        st.pyplot(fig)
+if st.button("Generate Forecast"):
+    with st.spinner("Forecasting..."):
+        train_series = train_display[target_col].values
+        preds = forecast_lstm_over_test(
+            model=model,
+            scaler=scaler,
+            train_series=train_series,
+            test_len=steps,
+            window_size=30
+        )
 
-        st.subheader("Latest Input Window")
-        st.line_chart(pd.DataFrame({"Recent Actual Values": series[-30:]}))
+        forecast_df = pd.DataFrame({
+            "Forecast": preds
+        }, index=test_actual.index)
 
-    except Exception as e:
-        st.error(f"Forecast failed: {e}")
+    st.subheader("Forecast Results")
+    fig, ax = plt.subplots(figsize=(12, 4))
+    train_display[target_col].plot(ax=ax, label="Historical", color="steelblue")
+    forecast_df["Forecast"].plot(ax=ax, label="Forecast", color="tomato")
+    ax.legend()
+    ax.set_title("Energy Demand Forecast")
+    st.pyplot(fig)
