@@ -8,8 +8,8 @@ from statsmodels.tsa.arima.model import ARIMAResults
 
 @st.cache_resource  # loads once, stays in memory
 def load_model():
-    model = ARIMAResults.load('arima_model.pkl')
-    params = joblib.load('arima_params.joblib')
+    model = ARIMAResults.load('model/arima_model.pkl')
+    params = joblib.load('model/arima_params.joblib')
     return model, params
 
 model, params = load_model()
