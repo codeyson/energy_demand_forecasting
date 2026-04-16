@@ -53,11 +53,7 @@ def load_data():
 
     return df
 
-# =============================
-# FORECAST FUNCTION
-# Notebook-style prediction:
-# uses actual previous values for each test step
-# =============================
+
 def forecast_lstm(model, scaler, train_series, test_series, window_size=30):
     full_series = np.concatenate([train_series, test_series])
     scaled_full = scaler.transform(full_series.reshape(-1, 1)).flatten()
@@ -122,12 +118,10 @@ if st.button("Generate Forecast"):
 
     st.subheader("Forecast Results")
     fig, ax = plt.subplots(figsize=(12, 4))
-    ax.plot(train_display["time"], train_display["price actual"], label=f'Historical ({100 - forecast_pct}%)', color='steelblue')
-    ax.plot(actual_pct["time"], actual_pct["price actual"], label=f'Actual ({forecast_pct}%)', color='gray', linestyle=':')
+    ax.plot(train_display["time"], train_display["price actual"], label=f'Historical', color='steelblue')
     ax.plot(forecast_df.index, forecast_df['Forecast'], label='Forecast', color='tomato')
-    ax.axvline(x=train_display["time"].iloc[-1], color='black', linestyle='--', alpha=0.4, label='Split point')
     ax.legend()
-    ax.set_title(f"LSTM Energy Price Forecast — {100 - forecast_pct}/{forecast_pct} Split")
+    ax.set_title(f"LSTM Energy Price Forecast")
     ax.set_xlabel("time")
     ax.set_ylabel("Energy Price")
     st.pyplot(fig)
