@@ -5,9 +5,14 @@ import joblib
 import matplotlib.pyplot as plt
 import tensorflow as tf
 
-st.set_page_config(page_title="Energy Demand Forecasting", layout="wide")
+# =============================
+# PAGE CONFIG
+# =============================
+st.set_page_config(page_title="LSTM Energy Demand Forecast", layout="wide")
 
-
+# =============================
+# MODEL DEFINITION
+# =============================
 def build_lstm_model():
     model = tf.keras.Sequential([
         tf.keras.layers.LSTM(128, return_sequences=True, input_shape=(30, 1)),
@@ -19,15 +24,15 @@ def build_lstm_model():
     ])
     return model
 
+# =============================
+# LOAD RESOURCES
+# =============================
 @st.cache_resource
 def load_resources():
     try:
         model = build_lstm_model()
-
-        # Build model before loading weights
         dummy_input = np.zeros((1, 30, 1), dtype=np.float32)
         model(dummy_input)
-
         model.load_weights("model/lstm_model.h5")
         scaler = joblib.load("model/scaler.pkl")
         return model, scaler, None
@@ -36,36 +41,23 @@ def load_resources():
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv("dataset/energy_dataset.csv", index_col="time")
+    df = pd.read_csv("dataset/energy-dataset.csv", index_col='time')
     df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
-    df = df.sort_index()
-    df = df.asfreq("D")
+    df = df.asfreq('D')
+    df['price actual'] = df['price actual'].interpolate(method='linear')
     return df
 
-def get_target_column(df):
-    possible_cols = [
-        "price actual",
-        "energy",
-        "demand",
-        "energy_demand",
-        "load",
-        "generation"
-    ]
-    for col in possible_cols:
-        if col in df.columns:
-            return col
-    return df.columns[-1]
-
-def forecast_lstm_over_test(model, scaler, train_series, test_len, window_size=30):
-    scaled_train = scaler.transform(train_series.reshape(-1, 1))
-    input_seq = scaled_train[-window_size:].reshape(1, window_size, 1)
+# =============================
+# FORECAST FUNCTION
+# =============================
+def forecast_lstm(model, scaler, series, steps=30, window_size=30):
+    scaled_series = scaler.transform(series.reshape(-1, 1))
+    input_seq = scaled_series[-window_size:].reshape(1, window_size, 1)
 
     preds_scaled = []
-
-    for _ in range(test_len):
+    for _ in range(steps):
         pred = model.predict(input_seq, verbose=0)
         preds_scaled.append(pred[0, 0])
-
         input_seq = np.concatenate(
             [input_seq[:, 1:, :], pred.reshape(1, 1, 1)],
             axis=1
@@ -75,8 +67,11 @@ def forecast_lstm_over_test(model, scaler, train_series, test_len, window_size=3
     preds = scaler.inverse_transform(preds_scaled).flatten()
     return preds
 
+# =============================
 # APP
-st.title("Energy Demand Forecasting")
+# =============================
+st.title("⚡ LSTM Energy Demand Forecasting")
+st.write("Forecast future energy demand using the saved LSTM model.")
 
 model, scaler, load_error = load_resources()
 
@@ -84,28 +79,11 @@ if load_error:
     st.error(f"Model/scaler loading failed: {load_error}")
     st.stop()
 
-try:
-    df = load_data()
-except Exception as e:
-    st.error(f"Dataset loading failed: {e}")
-    st.stop()
+df = load_data()
 
-target_col = get_target_column(df)
-
-if target_col not in df.columns:
-    st.error("Target column not found in dataset.")
-    st.stop()
-
-df[target_col] = pd.to_numeric(df[target_col], errors="coerce")
-df[target_col] = df[target_col].interpolate(method="linear")
-df = df.dropna(subset=[target_col])
-
-if len(df) < 60:
-    st.error("Dataset must contain at least 60 valid rows for forecasting.")
-    st.stop()
-
-st.write("Model: LSTM")
-
+# =============================
+# SLIDER — same as ARIMA app
+# =============================
 forecast_pct = st.slider(
     "Forecast portion of data (%)",
     min_value=5,
@@ -117,32 +95,37 @@ forecast_pct = st.slider(
 
 split_idx = int(len(df) * (1 - forecast_pct / 100))
 train_display = df.iloc[:split_idx]
-test_actual = df.iloc[split_idx:]
-steps = len(test_actual)
+actual_pct = df.iloc[split_idx:]
+steps = len(actual_pct)
 
-if len(train_display) < 30:
-    st.error("Training portion is too small. Increase the dataset size or reduce forecast percentage.")
-    st.stop()
+st.info(f"Historical: {split_idx} days ({100 - forecast_pct}%) → Forecast: {steps} days ({forecast_pct}%)")
 
+# =============================
+# FORECAST
+# =============================
 if st.button("Generate Forecast"):
     with st.spinner("Forecasting..."):
-        train_series = train_display[target_col].values
-        preds = forecast_lstm_over_test(
-            model=model,
-            scaler=scaler,
-            train_series=train_series,
-            test_len=steps,
-            window_size=30
-        )
+
+        # Use training portion as input window
+        series = train_display['price actual'].values
+        preds = forecast_lstm(model, scaler, series, steps=steps, window_size=30)
 
         forecast_df = pd.DataFrame({
-            "Forecast": preds
-        }, index=test_actual.index)
+            'Forecast': preds
+        }, index=actual_pct.index)
 
     st.subheader("Forecast Results")
     fig, ax = plt.subplots(figsize=(12, 4))
-    train_display[target_col].plot(ax=ax, label="Historical", color="steelblue")
-    forecast_df["Forecast"].plot(ax=ax, label="Forecast", color="tomato")
+    train_display['price actual'].plot(ax=ax, label=f'Historical ({100 - forecast_pct}%)', color='steelblue')
+    actual_pct['price actual'].plot(ax=ax, label=f'Actual ({forecast_pct}%)', color='gray', linestyle=':')
+    forecast_df['Forecast'].plot(ax=ax, label='Forecast', color='tomato')
+    ax.axvline(x=train_display.index[-1], color='black', linestyle='--', alpha=0.4, label='Split point')
     ax.legend()
-    ax.set_title("Energy Demand Forecast")
+    ax.set_title(f"LSTM Energy Price Forecast — {100 - forecast_pct}/{forecast_pct} Split")
     st.pyplot(fig)
+
+    st.subheader("Forecast Values")
+    st.dataframe(forecast_df)
+
+    csv = forecast_df.to_csv().encode('utf-8')
+    st.download_button("Download Forecast CSV", csv, "lstm_forecast.csv", "text/csv")
