@@ -86,7 +86,7 @@ df = load_data()
 # SLIDER — same as ARIMA app
 # =============================
 forecast_pct = st.slider(
-    "Forecast portion of data (%)",
+    "Forecast Amount of Days",
     min_value=5,
     max_value=40,
     value=20,
@@ -99,7 +99,6 @@ train_display = df.iloc[:split_idx]
 actual_pct = df.iloc[split_idx:]
 steps = len(actual_pct)
 
-st.info(f"Historical: {split_idx} days ({100 - forecast_pct}%) → Forecast: {steps} days ({forecast_pct}%)")
 
 # =============================
 # FORECAST
